@@ -149,8 +149,8 @@
   .pipe-sync{font-size:9.8px;color:var(--text-faint);display:flex;align-items:center;gap:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .pipe-sync svg{width:10px;height:10px;flex:none;}
   .pipe-sync.live{color:var(--s-green);}
-  .pipe-count{font-size:11px;color:var(--text-faint);background:var(--surface-2);border:1px solid var(--border);border-radius:20px;padding:1px 7px;font-family:"IBM Plex Mono";flex:none;}
-  .pipe-item.active .pipe-count{background:var(--surface);}
+  .pipe-count{font-size:11px;font-weight:600;color:var(--text-muted);background:var(--surface-2);border:1px solid var(--border);border-radius:20px;padding:1px 7px;font-family:"IBM Plex Mono";flex:none;}
+  .pipe-item.active .pipe-count{background:var(--surface);color:var(--accent-ink);border-color:var(--ring);}
   .pipe-rename{opacity:0;flex:none;width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);cursor:pointer;}
   .pipe-rename:hover{background:var(--surface);color:var(--text);}
   .pipe-rename svg{width:12px;height:12px;}
@@ -978,6 +978,7 @@
       watchDbSize();
       subscribeSyncSources();
       subscribeTeamUsers();
+      startAutoSync();
     });
   }
 
@@ -1143,6 +1144,7 @@
       '<h2 class="form-title">Einstellungen: ' + esc(p.name) + '</h2>' +
       '<div class="settings-section" style="border-top:none;margin-top:0;padding-top:0;">' +
         '<h3>Automatischer Import aus Google Sheets</h3>' +
+        '<p class="form-hint" style="margin:0 0 10px;">Die Tabelle muss auf „Jeder mit dem Link kann es ansehen" freigegeben sein (Google Sheets → Teilen), sonst kann der Sync nicht darauf zugreifen.</p>' +
         statusNote +
         '<div class="form-row"><label>Google-Sheets-Link</label><input type="text" id="ps_link" value="' + esc(existing ? ('https://docs.google.com/spreadsheets/d/' + existing.driveFileId + '/edit') : '') + '" placeholder="https://docs.google.com/spreadsheets/d/…"></div>' +
         '<div class="form-row"><label>Tab-Namen (Komma-getrennt, leer = alle Tabs)</label><input type="text" id="ps_tabs" value="' + esc((existing && existing.sheetTabs) ? existing.sheetTabs.join(', ') : '') + '" placeholder="Sheet1, Sheet3"></div>' +
@@ -1155,7 +1157,8 @@
         (customFieldsHtml ? ('<p class="form-hint" style="margin:0 0 8px;">Eigene Felder dieser Kampagne:</p>' + customFieldsHtml) : '') +
         '<p class="form-hint">Trage die Spaltenüberschriften genau so ein, wie sie in Zeile 1 der Google-Tabelle stehen (Groß-/Kleinschreibung egal). Jede Kampagne kann andere Spaltennamen haben — leer lassen, was nicht aus der Tabelle übernommen werden soll.</p>' +
         '<div class="form-actions" style="justify-content:flex-start;gap:8px;margin-top:10px;">' +
-          '<button class="btn btn-primary" id="psSave">Sync speichern</button>' +
+          '<button class="btn btn-primary" id="psSave">Sync speichern' + (existing ? ' & jetzt synchronisieren' : ' & synchronisieren') + '</button>' +
+          (existing ? '<button class="btn btn-ghost" id="psSyncNow">Jetzt synchronisieren</button>' : '') +
           (existing ? '<button class="btn btn-ghost btn-danger" id="psDisconnect">Verbindung trennen</button>' : '') +
         '</div>' +
       '</div>' +
@@ -1206,11 +1209,38 @@
         lastSyncError: null
       };
       var target = (existing && existing._docId) || id;
+      var saveBtn = modal.querySelector('#psSave');
+      saveBtn.disabled = true; saveBtn.textContent = 'Speichert …';
       db.doc('syncSources/' + target).set(data).then(function(){
-        toast('Sync-Einstellungen gespeichert');
+        toast('Sync-Einstellungen gespeichert — synchronisiere …');
+        return runSyncForSource(target, data);
+      }).then(function(result){
+        if(result && result.error){
+          toast('Gespeichert, aber Sync fehlgeschlagen: ' + result.error);
+        } else {
+          toast('Synchronisiert' + (result && result.count != null ? (': ' + result.count + ' neue Leads') : ''));
+        }
         root.innerHTML = '';
-      }).catch(function(){ toast('Speichern fehlgeschlagen'); });
+      }).catch(function(){
+        toast('Speichern fehlgeschlagen');
+        saveBtn.disabled = false; saveBtn.textContent = 'Sync speichern';
+      });
     });
+
+    var syncNowBtn = modal.querySelector('#psSyncNow');
+    if(syncNowBtn){
+      syncNowBtn.addEventListener('click', function(){
+        syncNowBtn.disabled = true; syncNowBtn.textContent = 'Synchronisiert …';
+        runSyncForSource(existing._docId, existing).then(function(result){
+          if(result && result.error){
+            toast('Sync fehlgeschlagen: ' + result.error);
+          } else {
+            toast('Synchronisiert' + (result && result.count != null ? (': ' + result.count + ' neue Leads') : ''));
+          }
+          root.innerHTML = '';
+        });
+      });
+    }
 
     var disconnectBtn = modal.querySelector('#psDisconnect');
     if(disconnectBtn){
@@ -1269,6 +1299,129 @@
       renderSidebar();
     }, function(){});
   }
+
+  /* ============================================================
+     Google Sheets sync engine — runs entirely in the browser.
+     Fetches the sheet's public CSV export (works when the sheet is shared
+     as "Anyone with the link can view"), matches columns against fieldMap,
+     and creates leads that don't already exist yet (deduplicated by a
+     stable id derived from the sheet's own "id" column, or from
+     name+phone+email when there is no id column).
+     ============================================================ */
+  function gvizCsvUrl(fileId, tabName){
+    var url = 'https://docs.google.com/spreadsheets/d/' + encodeURIComponent(fileId) + '/gviz/tq?tqx=out:csv';
+    if(tabName) url += '&sheet=' + encodeURIComponent(tabName);
+    return url;
+  }
+
+  function processSheetCsv(src, csvText){
+    var lines = csvText.split(/\r?\n/).filter(function(l){ return l.trim() !== ''; });
+    if(lines.length < 2) return Promise.resolve(0);
+    var rows = lines.map(function(l){ return parseCsvLine(l, [',']); });
+    var headers = rows[0].map(function(h){ return h.trim(); });
+    var headersLower = headers.map(function(h){ return h.toLowerCase(); });
+    var dataRows = rows.slice(1);
+
+    function colIndex(headerMatch){ return headersLower.indexOf((headerMatch||'').trim().toLowerCase()); }
+    var idIdx = headersLower.indexOf('id');
+    var fieldMap = src.fieldMap || [];
+
+    return db.collection('leads').where('pipelineId','==',src.pipelineId).get().then(function(snap){
+      var existingIds = {};
+      snap.docs.forEach(function(d){ existingIds[d.id] = true; });
+
+      var toCreate = [];
+      dataRows.forEach(function(cells){
+        var rawId = idIdx > -1 ? (cells[idIdx]||'').trim() : '';
+        if(!rawId){
+          rawId = fieldMap.filter(function(m){ return ['name','phone','email'].indexOf(m.targetType) !== -1; })
+            .map(function(m){ var ci = colIndex(m.headerMatch); return ci > -1 ? (cells[ci]||'').trim().toLowerCase() : ''; })
+            .join('|');
+        }
+        if(!rawId || !rawId.replace(/\|/g,'')) return;
+        var docId = 'l:' + rawId.replace(/[^a-zA-Z0-9_\-.:@+|]/g, '_').slice(0,140);
+        if(existingIds[docId]) return;
+
+        var pipe = pipelines[src.pipelineId];
+        var defaultStatus = src.newLeadStatusId || ((pipe && pipe.columns && pipe.columns[0]) ? pipe.columns[0].id : COLUMN_TEMPLATE[0].id);
+        var lead = {pipelineId: src.pipelineId, statusId: defaultStatus, name:'', email:'', phone:'', custom:{}, description:'', createdAt: nowIso(), updatedAt: nowIso()};
+        var statusNote = '';
+        fieldMap.forEach(function(m){
+          var ci = colIndex(m.headerMatch);
+          if(ci === -1) return;
+          var val = (cells[ci]||'').trim();
+          if(!val) return;
+          if(m.targetType === 'name') lead.name = val;
+          else if(m.targetType === 'phone') lead.phone = val;
+          else if(m.targetType === 'email') lead.email = val;
+          else if(m.targetType === 'adName') lead.description = (lead.description ? lead.description + '\n' : '') + 'Anzeige: ' + val;
+          else if(m.targetType === 'leadStatusNote') statusNote = val;
+          else if(m.targetType === 'custom' && m.customKey) lead.custom[m.customKey] = val;
+        });
+        if(!lead.name) return;
+        existingIds[docId] = true;
+        toCreate.push({docId: docId, lead: lead, statusNote: statusNote});
+      });
+
+      if(toCreate.length === 0) return 0;
+
+      var idx = 0;
+      function nextChunk(){
+        var chunk = toCreate.slice(idx, idx + 15);
+        if(chunk.length === 0) return Promise.resolve();
+        return Promise.all(chunk.map(function(item){
+          return db.doc('leads/' + item.docId).set(item.lead).then(function(){
+            var jobs = [logHistory(item.docId, src.pipelineId, {type:'note', text:'Lead automatisch aus Google Sheets importiert'})];
+            if(item.statusNote) jobs.push(logHistory(item.docId, src.pipelineId, {type:'note', text:'Status aus Sheet: ' + item.statusNote}));
+            return Promise.all(jobs);
+          });
+        })).then(function(){ idx += 15; return nextChunk(); });
+      }
+      return nextChunk().then(function(){ return toCreate.length; });
+    });
+  }
+
+  function runSyncForSource(sourceDocId, src){
+    var tabs = (src.sheetTabs && src.sheetTabs.length) ? src.sheetTabs : [null];
+    var totalNew = 0;
+    var chain = Promise.resolve();
+    tabs.forEach(function(tab){
+      chain = chain.then(function(){
+        return fetch(gvizCsvUrl(src.driveFileId, tab)).then(function(res){
+          if(!res.ok) throw new Error('Tabelle nicht erreichbar (HTTP ' + res.status + ') — ist sie auf "Jeder mit dem Link" freigegeben?');
+          return res.text();
+        }).then(function(csvText){
+          return processSheetCsv(src, csvText);
+        }).then(function(n){ totalNew += n; });
+      });
+    });
+    return chain.then(function(){
+      return db.doc('syncSources/' + sourceDocId).update({
+        lastSyncedAt: nowIso(), lastNewLeadsCount: totalNew, lastSyncError: null
+      }).then(function(){ return {count: totalNew}; });
+    }).catch(function(err){
+      console.error('Sheet sync failed for', sourceDocId, err);
+      var msg = (err && err.message) || 'Unbekannter Fehler';
+      return db.doc('syncSources/' + sourceDocId).update({
+        lastSyncedAt: nowIso(), lastSyncError: msg
+      }).catch(function(){}).then(function(){ return {error: msg}; });
+    });
+  }
+
+  var syncTimer = null;
+  function runAllSyncs(){
+    Object.keys(syncSources).forEach(function(sourceDocId){
+      runSyncForSource(sourceDocId, syncSources[sourceDocId]);
+    });
+  }
+  function startAutoSync(){
+    if(syncTimer) clearInterval(syncTimer);
+    // First run shortly after boot (gives subscribeSyncSources a moment to populate),
+    // then every 5 minutes for as long as this tab stays open.
+    setTimeout(runAllSyncs, 4000);
+    syncTimer = setInterval(runAllSyncs, 5 * 60 * 1000);
+  }
+
   function refreshPipelineCount(id){
     db.collection('leads').where('pipelineId','==',id).get().then(function(snap){
       var badge = document.querySelector('.pipe-count[data-count="' + CSS.escape(id) + '"]');
@@ -1314,7 +1467,10 @@
     if(unsubLeads) { unsubLeads(); unsubLeads = null; }
     leads = {};
     renderCurrentView();
-    unsubLeads = db.collection('leads').where('pipelineId','==',currentPipelineId).orderBy('updatedAt','desc').limit(1000)
+    // No server-side orderBy here on purpose: combining it with the pipelineId filter would
+    // require a Firestore composite index, and this list is sorted client-side anyway (see
+    // renderBoard/renderList), so we avoid that dependency entirely.
+    unsubLeads = db.collection('leads').where('pipelineId','==',currentPipelineId).limit(3000)
       .onSnapshot(function(qs){
         var next = {};
         qs.docs.forEach(function(d){ next[d.id] = d.data(); });
@@ -1323,6 +1479,7 @@
         refreshPipelineCount(currentPipelineId);
       }, function(err){
         console.error(err);
+        toast('Leads konnten nicht geladen werden (' + (err && err.code ? err.code : 'Fehler') + ')');
       });
   }
 
@@ -1576,14 +1733,27 @@
     if(idxName === -1) idxName = 0;
     var col0 = (pipelines[currentPipelineId].columns || COLUMN_TEMPLATE)[0].id;
     var progress = document.getElementById('importProgress');
-    var i = 0, created = 0;
+    var i = 0, created = 0, skipped = 0;
+
+    // Duplicate detection: a re-uploaded/overlapping CSV should only add genuinely new leads.
+    // We match on normalized phone number or email against leads already loaded for this pipeline,
+    // and also against rows created earlier in this same import run.
+    function normPhone(p){ return (p||'').replace(/[^0-9]/g,''); }
+    function normEmail(e){ return (e||'').trim().toLowerCase(); }
+    var existingPhones = {}, existingEmails = {};
+    Object.keys(leads).forEach(function(lid){
+      var l = leads[lid];
+      var np = normPhone(l.phone), ne = normEmail(l.email);
+      if(np) existingPhones[np] = true;
+      if(ne) existingEmails[ne] = true;
+    });
 
     function step(){
       var chunk = rows.slice(i, i + 15);
       if(chunk.length === 0){
-        progress.textContent = created + ' Leads importiert.';
-        toast(created + ' Leads importiert');
-        setTimeout(function(){ document.getElementById('modalRoot').innerHTML=''; }, 700);
+        progress.textContent = created + ' Leads importiert' + (skipped ? (', ' + skipped + ' bereits vorhanden (übersprungen)') : '') + '.';
+        toast(created + ' importiert' + (skipped ? (', ' + skipped + ' Duplikate übersprungen') : ''));
+        setTimeout(function(){ document.getElementById('modalRoot').innerHTML=''; }, 900);
         return;
       }
       Promise.all(chunk.map(function(cells){
@@ -1591,6 +1761,13 @@
         if(!name) return Promise.resolve();
         var email = idxEmail > -1 ? (cells[idxEmail]||'').trim() : '';
         var phone = idxPhone > -1 ? (cells[idxPhone]||'').trim() : '';
+        var np = normPhone(phone), ne = normEmail(email);
+        if((np && existingPhones[np]) || (ne && existingEmails[ne])){
+          skipped++;
+          return Promise.resolve();
+        }
+        if(np) existingPhones[np] = true;
+        if(ne) existingEmails[ne] = true;
         var id = uid(); var ts = nowIso();
         return db.doc('leads/' + id).set({
           pipelineId: currentPipelineId, statusId: col0, name: name, email: email, phone: phone,
@@ -1628,11 +1805,18 @@
     historyEntries = [];
     renderLeadDetail();
     if(unsubHistory) unsubHistory();
-    unsubHistory = db.collection('history').where('leadId','==',id).orderBy('ts','asc').limit(500)
+    // Same reasoning as the leads listener: no server-side orderBy, sort client-side instead,
+    // so this never needs a Firestore composite index.
+    unsubHistory = db.collection('history').where('leadId','==',id).limit(500)
       .onSnapshot(function(qs){
-        historyEntries = qs.docs.map(function(d){ return d.data(); });
+        historyEntries = qs.docs.map(function(d){ return d.data(); }).sort(function(a,b){
+          return (a.ts||'').localeCompare(b.ts||'');
+        });
         renderTimeline();
-      }, function(){});
+      }, function(err){
+        console.error(err);
+        toast('Verlauf konnte nicht geladen werden (' + (err && err.code ? err.code : 'Fehler') + ')');
+      });
   }
 
   function closeLead(){
