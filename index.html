@@ -929,12 +929,18 @@
           document.getElementById('app').hidden = false;
           renderUserChip();
           boot();
+        }).catch(function(err){
+          console.error('ensureUserProfile failed', err);
+          errBox.textContent = 'Anmeldung hat funktioniert, aber der Zugriff auf die Datenbank wurde verweigert' +
+            (err && err.code ? (' (' + err.code + ')') : '') + '. Bitte in der Firebase-Konsole prüfen: 1) Firestore Database wurde erstellt, 2) die Sicherheitsregeln erlauben "if request.auth != null".';
+          errBox.hidden = false;
+          auth.signOut();
         });
       } else {
         currentUser = null; userProfile = null; isAdmin = false;
         document.getElementById('loginScreen').hidden = false;
         document.getElementById('app').hidden = true;
-        emailInput.value = ''; pwInput.value = ''; errBox.hidden = true;
+        pwInput.value = '';
         setTimeout(function(){ emailInput.focus(); }, 30);
       }
     });
