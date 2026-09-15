@@ -1314,15 +1314,28 @@
     return url;
   }
 
+  // Normalizes header text for comparison: trims, lowercases, strips zero-width/BOM
+  // characters that sometimes sneak into exported sheets, and normalizes Unicode so
+  // e.g. Arabic headers typed into the settings form still match the sheet's own headers
+  // even if they were entered with a different (but visually identical) Unicode form.
+  function normHeaderText(s){
+    return (s||'').normalize('NFKC').replace(/[​-‏﻿]/g,'').trim().toLowerCase();
+  }
+
   function processSheetCsv(src, csvText){
+    if(/^\s*</.test(csvText)){
+      // Google returned an HTML page (e.g. a login/"request access" page) instead of CSV —
+      // this means the sheet is not actually shared as "Anyone with the link can view".
+      return Promise.reject(new Error('Die Tabelle hat keine CSV-Daten zurückgegeben, sondern eine HTML-Seite (vermutlich ein Login/Freigabe-Hinweis). Bitte in Google Sheets auf "Teilen" → "Jeder mit dem Link" → "Betrachter" stellen.'));
+    }
     var lines = csvText.split(/\r?\n/).filter(function(l){ return l.trim() !== ''; });
-    if(lines.length < 2) return Promise.resolve(0);
+    if(lines.length < 2) return Promise.resolve({count:0, headers:[], rowCount: lines.length});
     var rows = lines.map(function(l){ return parseCsvLine(l, [',']); });
     var headers = rows[0].map(function(h){ return h.trim(); });
-    var headersLower = headers.map(function(h){ return h.toLowerCase(); });
+    var headersLower = headers.map(normHeaderText);
     var dataRows = rows.slice(1);
 
-    function colIndex(headerMatch){ return headersLower.indexOf((headerMatch||'').trim().toLowerCase()); }
+    function colIndex(headerMatch){ return headersLower.indexOf(normHeaderText(headerMatch)); }
     var idIdx = headersLower.indexOf('id');
     var fieldMap = src.fieldMap || [];
 
@@ -1363,7 +1376,7 @@
         toCreate.push({docId: docId, lead: lead, statusNote: statusNote});
       });
 
-      if(toCreate.length === 0) return 0;
+      if(toCreate.length === 0) return {count:0, headers: headers, rowCount: dataRows.length};
 
       var idx = 0;
       function nextChunk(){
@@ -1377,13 +1390,13 @@
           });
         })).then(function(){ idx += 15; return nextChunk(); });
       }
-      return nextChunk().then(function(){ return toCreate.length; });
+      return nextChunk().then(function(){ return {count: toCreate.length, headers: headers, rowCount: dataRows.length}; });
     });
   }
 
   function runSyncForSource(sourceDocId, src){
     var tabs = (src.sheetTabs && src.sheetTabs.length) ? src.sheetTabs : [null];
-    var totalNew = 0;
+    var totalNew = 0, totalRows = 0, lastHeadersSeen = null;
     var chain = Promise.resolve();
     tabs.forEach(function(tab){
       chain = chain.then(function(){
@@ -1392,13 +1405,27 @@
           return res.text();
         }).then(function(csvText){
           return processSheetCsv(src, csvText);
-        }).then(function(n){ totalNew += n; });
+        }).then(function(result){
+          totalNew += result.count;
+          totalRows += result.rowCount;
+          if(result.headers && result.headers.length) lastHeadersSeen = result.headers;
+        });
       });
     });
     return chain.then(function(){
+      var errMsg = null;
+      if(totalNew === 0 && totalRows > 0){
+        // The sheet was reached and had rows, but nothing matched — almost always means the
+        // column names configured in "Kampagne-Einstellungen" don't exactly match the sheet's
+        // actual header row (or every row was already imported before).
+        errMsg = 'Tabelle erreicht (' + totalRows + ' Zeile(n) geprüft), aber 0 neue Leads gefunden — entweder sind alle bereits importiert, oder die Spaltennamen stimmen nicht exakt mit der Tabelle überein.' +
+          (lastHeadersSeen ? (' Spaltenüberschriften in der Tabelle: ' + lastHeadersSeen.join(' | ')) : '');
+      } else if(totalRows === 0){
+        errMsg = 'Tabelle erreicht, aber keine Datenzeilen gefunden (nur Kopfzeile oder leer). Prüfe Tab-Namen und ob dort wirklich Daten stehen.';
+      }
       return db.doc('syncSources/' + sourceDocId).update({
-        lastSyncedAt: nowIso(), lastNewLeadsCount: totalNew, lastSyncError: null
-      }).then(function(){ return {count: totalNew}; });
+        lastSyncedAt: nowIso(), lastNewLeadsCount: totalNew, lastSyncError: errMsg
+      }).then(function(){ return {count: totalNew, error: errMsg}; });
     }).catch(function(err){
       console.error('Sheet sync failed for', sourceDocId, err);
       var msg = (err && err.message) || 'Unbekannter Fehler';
@@ -1722,18 +1749,30 @@
     var delims = detectCsvDelims(lines[0]);
     var rows = lines.map(function(l){ return parseCsvLine(l, delims); });
     var first = rows[0].map(function(s){ return s.toLowerCase(); });
-    var hasHeader = first.some(function(s){ return s.indexOf('name') !== -1; }) || first.some(function(s){ return s.indexOf('mail') !== -1; });
+    // A real header row shouldn't contain anything that looks like actual contact data
+    // (an "@" address or a mostly-digits phone number) — if it does, this is a data row,
+    // not a header, and must NOT be discarded (this previously ate the first lead whenever
+    // its email happened to contain "mail" as a substring, e.g. name@gmail.com).
+    var looksLikeDataRow = rows[0].some(function(s){ return /@/.test(s); }) ||
+      rows[0].some(function(s){ return /^[+()0-9][0-9()\-\s\/]{5,}$/.test((s||'').trim()); });
+    var hasHeader = !looksLikeDataRow &&
+      (first.some(function(s){ return s.indexOf('name') !== -1; }) || first.some(function(s){ return s.indexOf('mail') !== -1; }));
     var idxName = 0, idxEmail = 1, idxPhone = 2;
+    var detectedNote = 'Spalten anhand Reihenfolge angenommen: 1=Name, 2=E-Mail, 3=Telefon.';
     if(hasHeader){
       idxName = first.findIndex(function(s){ return s.indexOf('name') !== -1; });
       idxEmail = first.findIndex(function(s){ return s.indexOf('mail') !== -1; });
-      idxPhone = first.findIndex(function(s){ return s.indexOf('telefon') !== -1 || s.indexOf('phone') !== -1 || s.indexOf('nummer') !== -1; });
+      idxPhone = first.findIndex(function(s){ return s.indexOf('telefon') !== -1 || s.indexOf('tel') !== -1 || s.indexOf('phone') !== -1 || s.indexOf('nummer') !== -1; });
       rows = rows.slice(1);
+      detectedNote = 'Kopfzeile erkannt — Name: ' + (idxName>-1?('Spalte '+(idxName+1)):'nicht gefunden') +
+        ', E-Mail: ' + (idxEmail>-1?('Spalte '+(idxEmail+1)):'nicht gefunden') +
+        ', Telefon: ' + (idxPhone>-1?('Spalte '+(idxPhone+1)):'nicht gefunden') + '.';
     }
     if(idxName === -1) idxName = 0;
     var col0 = (pipelines[currentPipelineId].columns || COLUMN_TEMPLATE)[0].id;
     var progress = document.getElementById('importProgress');
-    var i = 0, created = 0, skipped = 0;
+    progress.textContent = detectedNote;
+    var i = 0, created = 0, skipped = 0, noName = 0;
 
     // Duplicate detection: a re-uploaded/overlapping CSV should only add genuinely new leads.
     // We match on normalized phone number or email against leads already loaded for this pipeline,
@@ -1751,14 +1790,17 @@
     function step(){
       var chunk = rows.slice(i, i + 15);
       if(chunk.length === 0){
-        progress.textContent = created + ' Leads importiert' + (skipped ? (', ' + skipped + ' bereits vorhanden (übersprungen)') : '') + '.';
-        toast(created + ' importiert' + (skipped ? (', ' + skipped + ' Duplikate übersprungen') : ''));
-        setTimeout(function(){ document.getElementById('modalRoot').innerHTML=''; }, 900);
+        var summary = created + ' importiert';
+        if(skipped) summary += ', ' + skipped + ' Duplikate übersprungen';
+        if(noName) summary += ', ' + noName + ' ohne erkannten Namen übersprungen';
+        progress.textContent = detectedNote + ' ' + summary + '.';
+        toast(summary);
+        setTimeout(function(){ document.getElementById('modalRoot').innerHTML=''; }, 1400);
         return;
       }
       Promise.all(chunk.map(function(cells){
         var name = (cells[idxName] || '').trim();
-        if(!name) return Promise.resolve();
+        if(!name){ noName++; return Promise.resolve(); }
         var email = idxEmail > -1 ? (cells[idxEmail]||'').trim() : '';
         var phone = idxPhone > -1 ? (cells[idxPhone]||'').trim() : '';
         var np = normPhone(phone), ne = normEmail(email);
