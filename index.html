@@ -2250,7 +2250,7 @@
       var block = el('div');
       block.appendChild(el('div', 'tl-day', esc(g.label)));
       var entries = el('div', 'tl-entries');
-      g.items.slice().forEach(function(h){
+      g.items.slice().reverse().forEach(function(h){
         var entry = el('div', 'tl-entry');
         if(h.type === 'note'){
           entry.innerHTML = '<div class="tl-meta"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>' +
