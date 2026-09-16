@@ -15,8 +15,8 @@
     --border:#E5E1D8;
     --border-strong:#D6D1C4;
     --text:#221F1A;
-    --text-muted:#726B5C;
-    --text-faint:#A79F8C;
+    --text-muted:#5C5648;
+    --text-faint:#6E6858;
     --accent:#3454D1;
     --accent-ink:#1E3AA8;
     --accent-soft:#E8ECFB;
@@ -44,8 +44,8 @@
       --border:#2C303A;
       --border-strong:#3A3F4B;
       --text:#EDEBE5;
-      --text-muted:#9A9484;
-      --text-faint:#6C6758;
+      --text-muted:#ACA695;
+      --text-faint:#96907E;
       --accent:#7C93EE;
       --accent-ink:#C4D0FA;
       --accent-soft:rgba(124,147,238,.16);
@@ -72,8 +72,8 @@
     --border:#2C303A;
     --border-strong:#3A3F4B;
     --text:#EDEBE5;
-    --text-muted:#9A9484;
-    --text-faint:#6C6758;
+    --text-muted:#ACA695;
+    --text-faint:#96907E;
     --accent:#7C93EE;
     --accent-ink:#C4D0FA;
     --accent-soft:rgba(124,147,238,.16);
@@ -336,9 +336,9 @@
   .tl-day{font-size:11px;font-weight:700;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;padding-left:2px;}
   .tl-entries{display:flex;flex-direction:column;gap:8px;margin-top:7px;}
   .tl-entry{font-size:12.4px;}
-  .tl-meta{display:flex;align-items:center;gap:6px;color:var(--text-faint);margin-bottom:3px;font-size:11.3px;}
+  .tl-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;color:var(--text-muted);margin-bottom:3px;font-size:11.3px;}
   .tl-meta svg{width:12px;height:12px;}
-  .tl-author{font-family:"IBM Plex Mono";}
+  .tl-author{font-family:"IBM Plex Mono";font-weight:600;color:var(--text);}
   .tl-note{background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;white-space:pre-wrap;}
   .tl-status{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
   .tl-arrow{color:var(--text-faint);}
@@ -1856,9 +1856,17 @@
      ============================================================ */
   function logHistory(leadId, pipelineId, entry){
     var body = Object.assign({
-      leadId: leadId, pipelineId: pipelineId, author: authorName(), ts: nowIso()
+      leadId: leadId, pipelineId: pipelineId, author: authorName(),
+      authorEmail: (currentUser && currentUser.email) || '', ts: nowIso()
     }, entry);
     return db.collection('history').add(body);
+  }
+  // Combines display name + email into one unambiguous label for the timeline, e.g.
+  // "Amina · amina@example.de" — falls back gracefully for older entries that only have a name.
+  function authorLabel(h){
+    var name = h.author || 'Unbekannt';
+    if(h.authorEmail && h.authorEmail.toLowerCase() !== name.toLowerCase()) return name + ' · ' + h.authorEmail;
+    return h.authorEmail || name;
   }
 
   /* ============================================================
@@ -2142,8 +2150,8 @@
     (pipeline.fields||[]).forEach(function(f){ lines.push(f.label + ': ' + ((l.custom||{})[f.key]||'')); });
     lines.push('', 'Beschreibung:', l.description || '—', '', 'Verlauf:');
     historyEntries.forEach(function(h){
-      if(h.type === 'note') lines.push('[' + fmtRelative(h.ts) + ' · ' + h.author + '] Notiz: ' + h.text);
-      else lines.push('[' + fmtRelative(h.ts) + ' · ' + h.author + '] Status: ' + (h.fromStatus||'-') + ' » ' + h.toStatus);
+      if(h.type === 'note') lines.push('[' + fmtRelative(h.ts) + ' · ' + authorLabel(h) + '] Notiz: ' + h.text);
+      else lines.push('[' + fmtRelative(h.ts) + ' · ' + authorLabel(h) + '] Status: ' + (h.fromStatus||'-') + ' » ' + h.toStatus);
     });
     var blob = new Blob([lines.join('\n')], {type:'text/plain;charset=utf-8'});
     var url = URL.createObjectURL(blob);
@@ -2171,7 +2179,7 @@
     var histHtml = historyEntries.slice().reverse().map(function(h){
       var line = h.type === 'note' ? esc(h.text) :
         'Status geändert: ' + esc((columnOf(h.fromStatus)||{name:h.fromStatus||'—'}).name) + ' → ' + esc((columnOf(h.toStatus)||{name:h.toStatus}).name);
-      return '<div style="padding:8px 0;border-bottom:1px solid #ddd;"><div style="font-size:11px;color:#888;">' + esc(fmtRelative(h.ts)) + ' · ' + esc(h.author) + '</div><div>' + line + '</div></div>';
+      return '<div style="padding:8px 0;border-bottom:1px solid #ddd;"><div style="font-size:11px;color:#888;">' + esc(fmtRelative(h.ts)) + ' · ' + esc(authorLabel(h)) + '</div><div>' + line + '</div></div>';
     }).join('');
     win.document.write(
       '<!doctype html><html><head><meta charset="utf-8"><title>' + esc(l.name||'Lead') + '</title>' +
@@ -2246,12 +2254,12 @@
         var entry = el('div', 'tl-entry');
         if(h.type === 'note'){
           entry.innerHTML = '<div class="tl-meta"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>' +
-            '<span>Notiz</span><span>·</span><span class="mono">' + esc(fmtRelative(h.ts)) + '</span><span>·</span><span class="tl-author">' + esc(h.author) + '</span></div>' +
+            '<span>Notiz</span><span>·</span><span class="mono">' + esc(fmtRelative(h.ts)) + '</span><span>·</span><span class="tl-author">' + esc(authorLabel(h)) + '</span></div>' +
             '<div class="tl-note">' + esc(h.text) + '</div>';
         } else {
           var fromCol = columnOf(h.fromStatus), toCol = columnOf(h.toStatus);
           entry.innerHTML = '<div class="tl-meta"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M17 1l4 4-4 4M3 11V9a4 4 0 014-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 01-4 4H3"/></svg>' +
-            '<span>Statusänderung</span><span>·</span><span class="mono">' + esc(fmtRelative(h.ts)) + '</span><span>·</span><span class="tl-author">' + esc(h.author) + '</span></div>' +
+            '<span>Statusänderung</span><span>·</span><span class="mono">' + esc(fmtRelative(h.ts)) + '</span><span>·</span><span class="tl-author">' + esc(authorLabel(h)) + '</span></div>' +
             '<div class="tl-status">' +
               (fromCol ? ('<span class="status-pill">' + colDot(fromCol.color) + esc(fromCol.name) + '</span>') : '<span class="status-pill">—</span>') +
               '<span class="tl-arrow">»</span>' +
