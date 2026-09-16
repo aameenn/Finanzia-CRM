@@ -407,6 +407,8 @@
   .login-error{font-size:12px;color:var(--danger);background:var(--danger-soft);border-radius:8px;padding:8px 10px;margin-bottom:12px;}
   .login-btn{width:100%;justify-content:center;margin-top:6px;padding:10px;}
   .login-foot{font-size:11.3px;color:var(--text-faint);margin-top:16px;text-align:center;}
+  .login-link{display:block;width:100%;text-align:center;background:none;border:none;padding:0;margin-top:10px;font-size:12px;color:var(--accent-ink);cursor:pointer;text-decoration:underline;text-underline-offset:2px;}
+  .login-link:hover{color:var(--accent);}
   .profile-menu{
     position:absolute;top:calc(100% + 6px);left:0;background:var(--surface);border:1px solid var(--border);
     border-radius:10px;box-shadow:var(--shadow-md);padding:5px;width:220px;z-index:70;
@@ -444,6 +446,7 @@
       <input type="password" id="loginPassword" autocomplete="current-password" placeholder="••••••••">
     </div>
     <button class="btn btn-primary login-btn" id="loginSubmit">Anmelden</button>
+    <button type="button" class="login-link" id="loginForgotBtn">Passwort vergessen?</button>
     <p class="login-foot">Noch kein Zugang? Bitte einen Admin, dich über „Team verwalten“ einzurichten.</p>
   </div>
 </div>
@@ -742,7 +745,8 @@
     var wrap = document.getElementById('userChip').parentElement;
     var menu = el('div', 'profile-menu'); menu.id = 'profileMenu';
     var html =
-      '<button id="pmRename"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>Namen ändern</button>';
+      '<button id="pmRename"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>Namen ändern</button>' +
+      '<button id="pmPassword"><svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>Passwort ändern</button>';
     if(isAdmin){
       html += '<button id="pmTeam"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>Team verwalten</button>';
     }
@@ -750,6 +754,7 @@
     menu.innerHTML = html;
     wrap.appendChild(menu);
     menu.querySelector('#pmRename').addEventListener('click', function(){ menu.remove(); promptRenameProfile(); });
+    menu.querySelector('#pmPassword').addEventListener('click', function(){ menu.remove(); openChangePasswordModal(); });
     if(isAdmin) menu.querySelector('#pmTeam').addEventListener('click', function(){ menu.remove(); openTeamModal(); });
     menu.querySelector('#pmSignOut').addEventListener('click', function(){ menu.remove(); auth.signOut(); });
     setTimeout(function(){
@@ -776,6 +781,51 @@
           toast('Name aktualisiert');
         });
       }
+    });
+  }
+
+  function openChangePasswordModal(){
+    var root = document.getElementById('modalRoot');
+    var overlay = el('div', 'overlay');
+    var modal = el('div', 'modal modal-md form-modal');
+    modal.innerHTML =
+      '<h2 class="form-title">Passwort ändern</h2>' +
+      '<p class="form-sub">Zur Sicherheit bitte zuerst dein aktuelles Passwort bestätigen.</p>' +
+      '<div class="form-row"><label>Aktuelles Passwort</label><input type="password" id="cp_current" autocomplete="current-password"></div>' +
+      '<div class="form-row"><label>Neues Passwort (mind. 6 Zeichen)</label><input type="password" id="cp_new" autocomplete="new-password"></div>' +
+      '<div class="form-row"><label>Neues Passwort wiederholen</label><input type="password" id="cp_new2" autocomplete="new-password"></div>' +
+      '<div id="cpError" class="login-error" hidden></div>' +
+      '<div class="form-actions"><button class="btn btn-ghost" id="cpCancel">Abbrechen</button>' +
+        '<button class="btn btn-primary" id="cpSubmit">Passwort speichern</button></div>';
+    overlay.appendChild(modal);
+    root.innerHTML = '';
+    root.appendChild(overlay);
+    overlay.addEventListener('mousedown', function(e){ if(e.target === overlay) root.innerHTML=''; });
+    modal.querySelector('#cpCancel').addEventListener('click', function(){ root.innerHTML=''; });
+    var firstInput = modal.querySelector('#cp_current');
+    setTimeout(function(){ firstInput.focus(); }, 30);
+    modal.querySelector('#cpSubmit').addEventListener('click', function(){
+      var current = modal.querySelector('#cp_current').value;
+      var next = modal.querySelector('#cp_new').value;
+      var next2 = modal.querySelector('#cp_new2').value;
+      var errBox = modal.querySelector('#cpError');
+      errBox.hidden = true;
+      if(!current){ errBox.textContent = 'Bitte dein aktuelles Passwort eingeben.'; errBox.hidden = false; return; }
+      if(next.length < 6){ errBox.textContent = 'Das neue Passwort muss mindestens 6 Zeichen haben.'; errBox.hidden = false; return; }
+      if(next !== next2){ errBox.textContent = 'Die beiden neuen Passwörter stimmen nicht überein.'; errBox.hidden = false; return; }
+      var btn = modal.querySelector('#cpSubmit');
+      btn.disabled = true; btn.textContent = 'Wird gespeichert …';
+      var cred = firebase.auth.EmailAuthProvider.credential(currentUser.email, current);
+      currentUser.reauthenticateWithCredential(cred).then(function(){
+        return currentUser.updatePassword(next);
+      }).then(function(){
+        root.innerHTML = '';
+        toast('Passwort aktualisiert');
+      }).catch(function(err){
+        errBox.textContent = authErrorMessage(err);
+        errBox.hidden = false;
+        btn.disabled = false; btn.textContent = 'Passwort speichern';
+      });
     });
   }
 
@@ -887,7 +937,9 @@
       'auth/user-not-found': 'Kein Konto mit dieser E-Mail-Adresse gefunden.',
       'auth/invalid-credential': 'E-Mail oder Passwort ist falsch.',
       'auth/too-many-requests': 'Zu viele Versuche. Bitte kurz warten und erneut versuchen.',
-      'auth/network-request-failed': 'Keine Verbindung — bitte Internetverbindung prüfen.'
+      'auth/network-request-failed': 'Keine Verbindung — bitte Internetverbindung prüfen.',
+      'auth/requires-recent-login': 'Aus Sicherheitsgründen bitte zuerst das aktuelle Passwort bestätigen.',
+      'auth/missing-email': 'Bitte zuerst die E-Mail-Adresse oben eingeben.'
     };
     return (code && map[code]) || (err && err.message) || 'Unbekannter Fehler.';
   }
@@ -922,6 +974,30 @@
     loginBtn.addEventListener('click', doLogin);
     pwInput.addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
     emailInput.addEventListener('keydown', function(e){ if(e.key==='Enter') pwInput.focus(); });
+
+    document.getElementById('loginForgotBtn').addEventListener('click', function(){
+      var email = emailInput.value.trim();
+      errBox.hidden = true;
+      if(!email){
+        errBox.textContent = 'Bitte zuerst deine E-Mail-Adresse oben eingeben, dann auf „Passwort vergessen?“ klicken.';
+        errBox.hidden = false;
+        emailInput.focus();
+        return;
+      }
+      var forgotBtn = document.getElementById('loginForgotBtn');
+      forgotBtn.disabled = true;
+      auth.sendPasswordResetEmail(email).then(function(){
+        errBox.style.color = 'var(--success, #1a7f4e)';
+        errBox.textContent = 'E-Mail zum Zurücksetzen wurde an ' + email + ' gesendet. Bitte Posteingang (auch Spam) prüfen.';
+        errBox.hidden = false;
+      }).catch(function(err){
+        errBox.style.color = '';
+        errBox.textContent = authErrorMessage(err);
+        errBox.hidden = false;
+      }).then(function(){
+        forgotBtn.disabled = false;
+      });
+    });
 
     auth.onAuthStateChanged(function(user){
       if(unsubLeads){ unsubLeads(); unsubLeads = null; }
