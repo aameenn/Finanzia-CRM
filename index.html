@@ -1144,9 +1144,10 @@
       '<h2 class="form-title">Einstellungen: ' + esc(p.name) + '</h2>' +
       '<div class="settings-section" style="border-top:none;margin-top:0;padding-top:0;">' +
         '<h3>Automatischer Import aus Google Sheets</h3>' +
-        '<p class="form-hint" style="margin:0 0 10px;">Die Tabelle muss auf „Jeder mit dem Link kann es ansehen" freigegeben sein (Google Sheets → Teilen), sonst kann der Sync nicht darauf zugreifen.</p>' +
+        '<p class="form-hint" style="margin:0 0 10px;">Google blockiert den direkten Browser-Zugriff auf Tabellen meistens (CORS). Der zuverlässige Weg ist ein kleines Apps-Script in der Tabelle selbst — Anleitung: In der Google-Tabelle → Erweiterungen → Apps Script → Code aus der Anleitung einfügen (frag mich danach) → Bereitstellen → Web-App → Zugriff „Alle" → die entstehende URL hier unten eintragen.</p>' +
         statusNote +
         '<div class="form-row"><label>Google-Sheets-Link</label><input type="text" id="ps_link" value="' + esc(existing ? ('https://docs.google.com/spreadsheets/d/' + existing.driveFileId + '/edit') : '') + '" placeholder="https://docs.google.com/spreadsheets/d/…"></div>' +
+        '<div class="form-row"><label>Apps-Script-Web-App-URL (empfohlen — zuverlässig statt direktem Link)</label><input type="text" id="ps_appsscript" value="' + esc(existing && existing.appsScriptUrl || '') + '" placeholder="https://script.google.com/macros/s/…/exec"></div>' +
         '<div class="form-row"><label>Tab-Namen (Komma-getrennt, leer = alle Tabs)</label><input type="text" id="ps_tabs" value="' + esc((existing && existing.sheetTabs) ? existing.sheetTabs.join(', ') : '') + '" placeholder="Sheet1, Sheet3"></div>' +
         '<div class="form-row"><label>Status für neue Leads</label><select id="ps_status">' + statusOptions + '</select></div>' +
         '<div class="form-row"><label>Spaltenname: vollständiger Name</label><input type="text" id="ps_name" value="' + esc(mapped('name')) + '" placeholder="z. B. الاسم_بالكامل oder full_name"></div>' +
@@ -1199,6 +1200,7 @@
         sourceType: 'google_sheet_drive',
         pipelineId: id,
         driveFileId: fileId,
+        appsScriptUrl: modal.querySelector('#ps_appsscript').value.trim() || null,
         sheetTabs: tabs,
         newLeadStatusId: modal.querySelector('#ps_status').value,
         fieldMap: newFieldMap,
@@ -1313,6 +1315,14 @@
     if(tabName) url += '&sheet=' + encodeURIComponent(tabName);
     return url;
   }
+  // Preferred fetch path: a small Google Apps Script "Web App" bound to the sheet, deployed
+  // with "Anyone" access. Unlike Google's own export endpoints, Apps Script Web Apps reliably
+  // send permissive CORS headers, so this works even when the gviz export gets blocked by the
+  // browser as a cross-origin request (this happens more often than not in practice).
+  function appsScriptCsvUrl(baseUrl, tabName){
+    var sep = baseUrl.indexOf('?') === -1 ? '?' : '&';
+    return baseUrl + (tabName ? (sep + 'sheet=' + encodeURIComponent(tabName)) : '');
+  }
 
   // Normalizes header text for comparison: trims, lowercases, strips zero-width/BOM
   // characters that sometimes sneak into exported sheets, and normalizes Unicode so
@@ -1397,12 +1407,18 @@
   function runSyncForSource(sourceDocId, src){
     var tabs = (src.sheetTabs && src.sheetTabs.length) ? src.sheetTabs : [null];
     var totalNew = 0, totalRows = 0, lastHeadersSeen = null;
+    var usingAppsScript = !!(src.appsScriptUrl && src.appsScriptUrl.trim());
     var chain = Promise.resolve();
     tabs.forEach(function(tab){
       chain = chain.then(function(){
-        return fetch(gvizCsvUrl(src.driveFileId, tab)).then(function(res){
-          if(!res.ok) throw new Error('Tabelle nicht erreichbar (HTTP ' + res.status + ') — ist sie auf "Jeder mit dem Link" freigegeben?');
+        var url = usingAppsScript ? appsScriptCsvUrl(src.appsScriptUrl.trim(), tab) : gvizCsvUrl(src.driveFileId, tab);
+        return fetch(url).then(function(res){
+          if(!res.ok) throw new Error('Tabelle nicht erreichbar (HTTP ' + res.status + ').');
           return res.text();
+        }).then(function(text){
+          if(!usingAppsScript) return text;
+          if(text.indexOf('ERROR:') === 0) throw new Error('Apps-Script meldet: ' + text.slice(6).trim());
+          return text;
         }).then(function(csvText){
           return processSheetCsv(src, csvText);
         }).then(function(result){
@@ -1429,6 +1445,9 @@
     }).catch(function(err){
       console.error('Sheet sync failed for', sourceDocId, err);
       var msg = (err && err.message) || 'Unbekannter Fehler';
+      if(!usingAppsScript && /fetch/i.test(msg)){
+        msg = 'Der direkte Google-Sheets-Zugriff wurde vom Browser blockiert (CORS). Bitte richte stattdessen die Apps-Script-Web-App-URL ein (siehe Anleitung im Einstellungsdialog) — das ist der zuverlässige Weg.';
+      }
       return db.doc('syncSources/' + sourceDocId).update({
         lastSyncedAt: nowIso(), lastSyncError: msg
       }).catch(function(){}).then(function(){ return {error: msg}; });
