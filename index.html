@@ -645,6 +645,11 @@
       return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
     });
   }
+  // Meta Lead Ads exports phone numbers with a "p:" prefix (e.g. "p:+491761234567") —
+  // strip that off wherever a phone number enters the system, so it's never stored or shown.
+  function cleanPhoneValue(v){
+    return (v || '').trim().replace(/^p:\s*/i, '');
+  }
   function uid(){
     if(window.crypto && crypto.randomUUID) return crypto.randomUUID();
     return 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2);
@@ -1375,7 +1380,7 @@
           var val = (cells[ci]||'').trim();
           if(!val) return;
           if(m.targetType === 'name') lead.name = val;
-          else if(m.targetType === 'phone') lead.phone = val;
+          else if(m.targetType === 'phone') lead.phone = cleanPhoneValue(val);
           else if(m.targetType === 'email') lead.email = val;
           else if(m.targetType === 'adName') lead.description = (lead.description ? lead.description + '\n' : '') + 'Anzeige: ' + val;
           else if(m.targetType === 'leadStatusNote') statusNote = val;
@@ -1702,7 +1707,7 @@
         db.doc('leads/' + id).set({
           pipelineId: currentPipelineId,
           statusId: vals.statusId || cols[0].id,
-          name: vals.name.trim(), email: (vals.email||'').trim(), phone: (vals.phone||'').trim(),
+          name: vals.name.trim(), email: (vals.email||'').trim(), phone: cleanPhoneValue(vals.phone),
           custom: custom, description: '', createdAt: ts, updatedAt: ts
         }).then(function(){
           logHistory(id, currentPipelineId, {type:'note', text:'Lead angelegt'});
@@ -1821,7 +1826,7 @@
         var name = (cells[idxName] || '').trim();
         if(!name){ noName++; return Promise.resolve(); }
         var email = idxEmail > -1 ? (cells[idxEmail]||'').trim() : '';
-        var phone = idxPhone > -1 ? (cells[idxPhone]||'').trim() : '';
+        var phone = idxPhone > -1 ? cleanPhoneValue(cells[idxPhone]) : '';
         var np = normPhone(phone), ne = normEmail(email);
         if((np && existingPhones[np]) || (ne && existingEmails[ne])){
           skipped++;
@@ -2032,6 +2037,7 @@
 
   function saveLeadField(key, value){
     if(!activeLeadId) return;
+    if(key === 'phone') value = cleanPhoneValue(value);
     var patch = {updatedAt: nowIso()};
     patch[key] = value;
     db.doc('leads/' + activeLeadId).update(patch);
