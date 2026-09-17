@@ -1480,6 +1480,8 @@
           else if(m.targetType === 'custom' && m.customKey) lead.custom[m.customKey] = val;
         });
         if(!lead.name) return;
+        // Test-/Dummy-Zeilen aus dem Sheet (Status-Spalte == "test") nie als echten Lead anlegen.
+        if(statusNote && statusNote.trim().toLowerCase() === 'test') return;
         existingIds[docId] = true;
         toCreate.push({docId: docId, lead: lead, statusNote: statusNote});
       });
