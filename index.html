@@ -313,17 +313,18 @@
   .field-label{font-size:10.6px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-faint);margin-bottom:4px;}
   .field-value{
     border:1px solid transparent;background:transparent;width:100%;padding:3px 5px;border-radius:6px;font-size:13.3px;
-    resize:vertical;min-height:22px;
+    resize:none;min-height:22px;overflow:hidden;line-height:1.4;font-family:inherit;
+    white-space:nowrap;text-overflow:ellipsis;
   }
   .field-value:hover{border-color:var(--border);}
-  .field-value:focus{border-color:var(--accent);outline:none;background:var(--surface-2);}
+  .field-value:focus{border-color:var(--accent);outline:none;background:var(--surface-2);white-space:pre-wrap;text-overflow:clip;}
   .field-value::placeholder{color:var(--text-faint);}
   .add-field-btn{display:flex;align-items:center;gap:7px;color:var(--text-muted);font-size:12.6px;font-weight:600;padding:8px 5px;cursor:pointer;}
   .add-field-btn:hover{color:var(--accent);}
 
   .desc-box{
-    width:100%;border:1px solid var(--border);border-radius:9px;padding:10px 11px;font-size:13px;resize:vertical;
-    min-height:52px;background:var(--surface-2);
+    width:100%;border:1px solid var(--border);border-radius:9px;padding:10px 11px;font-size:13px;resize:none;
+    min-height:52px;background:var(--surface-2);overflow:hidden;
   }
   .desc-box:focus{outline:none;border-color:var(--accent);background:var(--surface);}
 
@@ -537,6 +538,7 @@
 </div>
 
 <div id="modalRoot"></div>
+<div id="modalRoot2"></div>
 <div class="toast-wrap" id="toastWrap"></div>
 
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
@@ -1981,8 +1983,9 @@
   function editNoteEntry(h){
     if(!isAdmin || !h.id) return;
     openFormModal({
+      nested: true,
       title: 'Notiz bearbeiten',
-      fields: [{key:'text', label:'Notiz', value: h.text || ''}],
+      fields: [{key:'text', label:'Notiz', type:'textarea', value: h.text || ''}],
       submitLabel: 'Speichern',
       onSubmit: function(vals){
         var text = (vals.text || '').trim();
@@ -2100,6 +2103,7 @@
     descBox.placeholder = 'Beschreibung …';
     descBox.value = l.description || '';
     descBox.addEventListener('blur', function(){ saveLeadField('description', descBox.value); });
+    wireAutoGrow(descBox);
     right.appendChild(descBox);
 
     var tabs = el('div', 'tabs');
@@ -2115,14 +2119,17 @@
       right.appendChild(renderFilesTab());
     } else {
       var noteInput = el('textarea', 'note-input');
-      noteInput.placeholder = 'Schreibe eine Notiz … (Strg/Cmd + Enter zum Speichern)';
+      noteInput.placeholder = 'Schreibe eine Notiz … (Enter zum Speichern, Shift+Enter für neue Zeile)';
       noteInput.id = 'noteInput';
       right.appendChild(noteInput);
-      right.appendChild(el('div', 'note-hint', 'Strg/Cmd + Enter speichert die Notiz.'));
+      right.appendChild(el('div', 'note-hint', 'Enter speichert die Notiz · Shift+Enter für eine neue Zeile.'));
       var tl = el('div', 'timeline'); tl.id = 'timeline';
       right.appendChild(tl);
       noteInput.addEventListener('keydown', function(e){
-        if((e.metaKey || e.ctrlKey) && e.key === 'Enter') submitNote(noteInput);
+        if(e.key === 'Enter' && !e.shiftKey){
+          e.preventDefault();
+          submitNote(noteInput);
+        }
       });
     }
     body.appendChild(right);
@@ -2164,16 +2171,30 @@
     if(activeTab !== 'dateien') renderTimeline();
   }
 
+  // Klick/Fokus lässt ein Text-/Notizfeld auf seine volle Höhe wachsen, damit auch lange
+  // Werte (z. B. "Finanzthema(n)") komplett sichtbar sind; beim Verlassen zieht es sich
+  // wieder auf eine kompakte Zeile zusammen.
+  function autoGrowTextarea(ta){
+    ta.style.height = 'auto';
+    ta.style.height = ta.scrollHeight + 'px';
+  }
+  function wireAutoGrow(ta){
+    ta.addEventListener('focus', function(){ autoGrowTextarea(ta); });
+    ta.addEventListener('input', function(){ autoGrowTextarea(ta); });
+    ta.addEventListener('blur', function(){ ta.style.height = ''; });
+  }
+
   function fieldRow(label, value, onSave, type){
     var row = el('div', 'field-row');
     row.appendChild(el('div', 'field-label', esc(label)));
-    var input = document.createElement(label === 'Beschreibung' ? 'textarea' : 'input');
-    if(type) input.type = type;
+    var input = document.createElement('textarea');
+    input.rows = 1;
     input.className = 'field-value';
     input.placeholder = 'Hier eingeben';
     input.value = value || '';
     input.addEventListener('blur', function(){ onSave(input.value); });
-    input.addEventListener('keydown', function(e){ if(e.key==='Enter' && input.tagName==='INPUT') input.blur(); });
+    input.addEventListener('keydown', function(e){ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); input.blur(); } });
+    wireAutoGrow(input);
     row.appendChild(input);
     return row;
   }
@@ -2481,7 +2502,10 @@
      Generic form modal (create pipeline / lead / field / move / confirm)
      ============================================================ */
   function openFormModal(cfg){
-    var root = document.getElementById('modalRoot');
+    // nested:true renders into a second, independent overlay layer (modalRoot2) instead of
+    // clearing modalRoot — used when a form needs to open on top of an already-open modal
+    // (e.g. "Notiz bearbeiten" over the offenen Lead-Detail-Popup) without destroying it.
+    var root = document.getElementById(cfg.nested ? 'modalRoot2' : 'modalRoot');
     var overlay = el('div', 'overlay');
     var modal = el('div', 'modal modal-md form-modal');
     var html = '<h2 class="form-title">' + esc(cfg.title) + '</h2>';
@@ -2506,6 +2530,11 @@
           if(o.value === f.value) opt.selected = true;
           input.appendChild(opt);
         });
+      } else if(f.type === 'textarea'){
+        input = document.createElement('textarea');
+        input.rows = 4;
+        input.placeholder = f.placeholder || '';
+        input.value = f.value || '';
       } else {
         input = document.createElement('input');
         input.type = f.type || 'text';
@@ -2522,7 +2551,7 @@
     root.appendChild(overlay);
     overlay.addEventListener('mousedown', function(e){ if(e.target === overlay) root.innerHTML=''; });
     modal.querySelector('#formCancel').addEventListener('click', function(){ root.innerHTML=''; });
-    var firstInput = modal.querySelector('input,select');
+    var firstInput = modal.querySelector('input,select,textarea');
     if(firstInput) setTimeout(function(){ firstInput.focus(); }, 30);
     modal.querySelector('#formSubmit').addEventListener('click', function(){
       var vals = {};
@@ -2537,9 +2566,11 @@
      ============================================================ */
   document.addEventListener('keydown', function(e){
     if(e.key === 'Escape'){
+      // Ein offener nested Dialog (z. B. "Notiz bearbeiten") wird zuerst geschlossen,
+      // ohne das dahinterliegende Lead-Popup mit zu schließen.
+      var mr2 = document.getElementById('modalRoot2');
+      if(mr2 && mr2.innerHTML.trim() !== ''){ mr2.innerHTML = ''; return; }
       if(activeLeadId) closeLead();
-      var mr = document.getElementById('modalRoot');
-      if(mr) mr.innerHTML = mr.innerHTML; // no-op guard
     }
   });
 
