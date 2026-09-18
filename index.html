@@ -1080,20 +1080,23 @@
     });
   }
 
+  // Legt die drei Start-Kampagnen NUR an, wenn die pipelines-Sammlung komplett leer ist
+  // (echter Erststart). Vorher wurde hier jede einzelne fehlende Seed-Kampagne für sich
+  // geprüft und neu angelegt — das ließ absichtlich gelöschte Kampagnen (z. B. "Expats")
+  // bei jedem Neuladen wieder auferstehen. Sobald irgendeine Kampagne existiert, wird hier
+  // nichts mehr automatisch erzeugt.
   function ensurePipelines(){
-    var jobs = SEED_PIPELINES.map(function(seed){
-      var ref = db.doc('pipelines/' + seed.id);
-      return ref.get().then(function(snap){
-        if(!snap.exists){
-          return ref.set({
-            name: seed.name, order: seed.order, fields: seed.fields,
-            columns: COLUMN_TEMPLATE.map(function(c){ return {id:c.id, name:c.name, color:c.color}; }),
-            createdAt: nowIso()
-          });
-        }
+    return db.collection('pipelines').limit(1).get().then(function(snap){
+      if(!snap.empty) return;
+      var jobs = SEED_PIPELINES.map(function(seed){
+        return db.doc('pipelines/' + seed.id).set({
+          name: seed.name, order: seed.order, fields: seed.fields,
+          columns: COLUMN_TEMPLATE.map(function(c){ return {id:c.id, name:c.name, color:c.color}; }),
+          createdAt: nowIso()
+        });
       });
-    });
-    return Promise.all(jobs).then(function(){ return subscribePipelines(); });
+      return Promise.all(jobs);
+    }).then(function(){ return subscribePipelines(); });
   }
 
   function subscribePipelines(){
