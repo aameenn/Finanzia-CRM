@@ -239,6 +239,8 @@
   .card-name{font-weight:600;font-size:13.4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .card-meta{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-faint);}
   .card-meta svg{width:12px;height:12px;}
+  .card-search-hit{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft);}
+  .column-search-hit .column-head{background:var(--accent-soft);}
 
   /* ---------- List view ---------- */
   .list-wrap{flex:1;overflow:auto;padding:16px 22px 22px;}
@@ -1692,17 +1694,22 @@
     if(!currentPipelineId) return;
     var pipeline = pipelines[currentPipelineId];
     var ids = filteredLeadIds();
+    var searching = !!searchTerm;
     var byCol = {};
     ids.forEach(function(id){
       var l = leads[id];
       (byCol[l.statusId] = byCol[l.statusId] || []).push(id);
     });
 
+    var firstMatchCard = null;
     (pipeline.columns || COLUMN_TEMPLATE).forEach(function(col){
       var colIds = (byCol[col.id] || []).slice().sort(function(a,b){
         return (leads[b].updatedAt || '').localeCompare(leads[a].updatedAt || '');
       });
-      var colEl = el('div', 'column');
+      // Bei aktiver Suche werden Spalten ohne Treffer ausgeblendet, damit der gesuchte
+      // Lead sofort sichtbar ist, statt ihn durch Scrollen über leere Spalten suchen zu müssen.
+      if(searching && colIds.length === 0) return;
+      var colEl = el('div', 'column' + (searching ? ' column-search-hit' : ''));
       colEl.dataset.colId = col.id;
       var head = el('div', 'column-head');
       head.innerHTML = colDot(col.color) +
@@ -1713,7 +1720,11 @@
       if(colIds.length === 0){
         body.appendChild(el('div', 'column-empty', 'Keine Leads'));
       } else {
-        colIds.forEach(function(id){ body.appendChild(renderCard(id, leads[id])); });
+        colIds.forEach(function(id){
+          var cardEl = renderCard(id, leads[id]);
+          if(searching){ cardEl.classList.add('card-search-hit'); if(!firstMatchCard) firstMatchCard = cardEl; }
+          body.appendChild(cardEl);
+        });
       }
       colEl.appendChild(body);
 
@@ -1727,6 +1738,14 @@
 
       board.appendChild(colEl);
     });
+
+    if(searching){
+      if(firstMatchCard){
+        firstMatchCard.scrollIntoView({block:'nearest', inline:'nearest'});
+      } else {
+        document.getElementById('boardWrap').scrollLeft = 0;
+      }
+    }
   }
 
   function renderCard(id, l){
