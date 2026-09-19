@@ -353,6 +353,8 @@
   .tl-action-btn:hover{background:var(--surface-2);color:var(--text);}
   .tl-action-btn.tl-action-danger:hover{background:var(--danger-soft);color:var(--danger);}
   .tl-note{background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:9px 10px;white-space:pre-wrap;}
+  .tl-note-editable{cursor:pointer;transition:border-color .12s ease, background .12s ease;}
+  .tl-note-editable:hover{border-color:var(--accent);background:var(--accent-soft);}
   .tl-status{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
   .tl-arrow{color:var(--text-faint);}
 
@@ -2438,16 +2440,15 @@
             (h.editedAt ? '<span>·</span><span class="tl-edited">bearbeitet</span>' : '') +
             '<span>·</span><span class="tl-author">' + esc(authorLabel(h)) + '</span>' +
             (isAdmin ? '<span class="tl-spacer"></span><div class="tl-actions">' +
-              '<button class="tl-action-btn" data-act="edit" title="Notiz bearbeiten"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg></button>' +
               '<button class="tl-action-btn tl-action-danger" data-act="delete" title="Notiz löschen"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6h16z"/></svg></button>' +
             '</div>' : '') +
             '</div>' +
-            '<div class="tl-note">' + esc(h.text) + '</div>';
+            '<div class="tl-note' + (isAdmin ? ' tl-note-editable' : '') + '"' + (isAdmin ? ' title="Klicken zum Bearbeiten"' : '') + '>' + esc(h.text) + '</div>';
           if(isAdmin){
-            var editBtn = entry.querySelector('[data-act="edit"]');
+            var noteBox = entry.querySelector('.tl-note');
             var delBtn = entry.querySelector('[data-act="delete"]');
-            if(editBtn) editBtn.addEventListener('click', function(){ editNoteEntry(h); });
-            if(delBtn) delBtn.addEventListener('click', function(){ deleteNoteEntry(h); });
+            if(noteBox) noteBox.addEventListener('click', function(){ editNoteEntry(h); });
+            if(delBtn) delBtn.addEventListener('click', function(e){ e.stopPropagation(); deleteNoteEntry(h); });
           }
         } else {
           var fromCol = columnOf(h.fromStatus), toCol = columnOf(h.toStatus);
