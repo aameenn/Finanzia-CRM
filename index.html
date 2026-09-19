@@ -2013,6 +2013,11 @@
     if(h.authorEmail && h.authorEmail.toLowerCase() !== name.toLowerCase()) return name + ' · ' + h.authorEmail;
     return h.authorEmail || name;
   }
+  // Für die Sortierung/Gruppierung im Verlauf zählt bei bearbeiteten Notizen der
+  // Bearbeitungszeitpunkt als "zuletzt geändert", nicht der ursprüngliche Erstellzeitpunkt —
+  // so springt eine gerade bearbeitete Notiz sofort nach oben, statt an ihrem alten Datum
+  // hängen zu bleiben.
+  function effTs(h){ return h.editedAt || h.ts; }
 
   // Notizen bearbeiten/löschen ist bewusst auf den Admin (ADMIN_EMAIL) beschränkt —
   // isAdmin wird beim Login gesetzt und spiegelt exakt diese Berechtigung.
@@ -2058,7 +2063,8 @@
     unsubHistory = db.collection('history').where('leadId','==',id).limit(500)
       .onSnapshot(function(qs){
         historyEntries = qs.docs.map(function(d){ return Object.assign({id: d.id}, d.data()); }).sort(function(a,b){
-          return (a.ts||'').localeCompare(b.ts||'');
+          var at = effTs(a) || '', bt = effTs(b) || '';
+          return at < bt ? -1 : at > bt ? 1 : 0;
         });
         renderTimeline();
       }, function(err){
@@ -2432,8 +2438,8 @@
     var groups = [];
     var lastKey = null;
     entries.forEach(function(h){
-      var key = new Date(h.ts).toDateString();
-      if(key !== lastKey){ groups.push({key:key, label: dayLabel(h.ts), items: []}); lastKey = key; }
+      var key = new Date(effTs(h)).toDateString();
+      if(key !== lastKey){ groups.push({key:key, label: dayLabel(effTs(h)), items: []}); lastKey = key; }
       groups[groups.length-1].items.push(h);
     });
     groups.reverse();
@@ -2446,7 +2452,7 @@
         var entry = el('div', 'tl-entry');
         if(h.type === 'note'){
           entry.innerHTML = '<div class="tl-meta"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>' +
-            '<span>Notiz</span><span>·</span><span class="mono">' + esc(fmtRelative(h.ts)) + '</span>' +
+            '<span>Notiz</span><span>·</span><span class="mono">' + esc(fmtRelative(effTs(h))) + '</span>' +
             (h.editedAt ? '<span>·</span><span class="tl-edited">bearbeitet</span>' : '') +
             '<span>·</span><span class="tl-author">' + esc(authorLabel(h)) + '</span>' +
             (isAdmin ? '<span class="tl-spacer"></span><div class="tl-actions">' +
