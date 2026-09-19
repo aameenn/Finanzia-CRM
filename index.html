@@ -1673,6 +1673,18 @@
   var onSearch = debounce(function(v){ searchTerm = v.trim().toLowerCase(); renderCurrentView(); }, 150);
   document.getElementById('searchInput').addEventListener('input', function(e){ onSearch(e.target.value); });
 
+  // Sortiert Leads nach updatedAt, neuester zuerst — bewusst ein simpler String-Vergleich
+  // statt localeCompare(), weil localeCompare je nach Browser-/System-Sprache ISO-Zeitstempel
+  // inkonsistent (mal so, mal so) einordnen kann. Bei exakt gleichem Zeitstempel (z. B. bei
+  // einem Massenimport) entscheidet zusätzlich die Lead-ID, damit die Reihenfolge bei jedem
+  // Neu-Rendern garantiert identisch bleibt statt zufällig zu wackeln.
+  function sortByUpdatedAtDesc(idA, idB){
+    var a = (leads[idA] && leads[idA].updatedAt) || '';
+    var b = (leads[idB] && leads[idB].updatedAt) || '';
+    if(a !== b) return a < b ? 1 : -1;
+    return idA < idB ? 1 : idA > idB ? -1 : 0;
+  }
+
   function filteredLeadIds(){
     var ids = Object.keys(leads);
     if(!searchTerm) return ids;
@@ -1705,9 +1717,7 @@
 
     var firstMatchCard = null;
     (pipeline.columns || COLUMN_TEMPLATE).forEach(function(col){
-      var colIds = (byCol[col.id] || []).slice().sort(function(a,b){
-        return (leads[b].updatedAt || '').localeCompare(leads[a].updatedAt || '');
-      });
+      var colIds = (byCol[col.id] || []).slice().sort(sortByUpdatedAtDesc);
       // Bei aktiver Suche werden Spalten ohne Treffer ausgeblendet, damit der gesuchte
       // Lead sofort sichtbar ist, statt ihn durch Scrollen über leere Spalten suchen zu müssen.
       if(searching && colIds.length === 0) return;
@@ -1788,7 +1798,7 @@
       wrap.appendChild(emptyState());
       return;
     }
-    ids.sort(function(a,b){ return (leads[b].updatedAt||'').localeCompare(leads[a].updatedAt||''); });
+    ids.sort(sortByUpdatedAtDesc);
     var table = el('table', 'leadtable');
     table.innerHTML = '<thead><tr><th>Name</th><th>Status</th><th>E-Mail</th><th>Telefon</th><th>Aktualisiert</th></tr></thead>';
     var tbody = el('tbody');
